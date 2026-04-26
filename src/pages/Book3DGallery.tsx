@@ -584,15 +584,6 @@ export default function Book3DGallery() {
       }
     }
 
-    /** 同源 PNG：优先 fetch + ImageBitmap（与 TextureLoader 的 img 标签路径不同，在部分 WebView / 嵌入浏览器里更稳） */
-    const imageBitmapLoader = new THREE.ImageBitmapLoader()
-    imageBitmapLoader.setOptions({
-      colorSpaceConversion: 'none',
-      premultiplyAlpha: 'none',
-      imageOrientation: 'flipY',
-    })
-    imageBitmapLoader.setCrossOrigin(undefined as unknown as string)
-
     const textureLoader = new THREE.TextureLoader()
     textureLoader.setCrossOrigin(undefined as unknown as string)
 
@@ -620,14 +611,31 @@ export default function Book3DGallery() {
       buildBook(frontCover, inner, insideCover, vibeInside, backOutside)
     }
 
+    const loadTextureViaFetch = async (abs: string) => {
+      const res = await fetch(abs, { credentials: 'same-origin' })
+      if (!res.ok) throw new Error(`fetch ${res.status}`)
+      const blob = await res.blob()
+      /** `imageOrientation: 'flipY'` 在部分 WebKit / 嵌入内核上会抛错，导致整页无贴图 */
+      let bitmap: ImageBitmap
+      try {
+        bitmap = await createImageBitmap(blob, {
+          colorSpaceConversion: 'none',
+          premultiplyAlpha: 'none',
+          imageOrientation: 'flipY',
+        })
+      } catch {
+        bitmap = await createImageBitmap(blob)
+      }
+      const tex = new THREE.Texture(bitmap)
+      tex.colorSpace = THREE.SRGBColorSpace
+      tex.needsUpdate = true
+      return tex
+    }
+
     const loadOneTexture = async (url: string): Promise<THREE.Texture> => {
       const abs = toAbsoluteAssetUrl(url)
       try {
-        const bitmap = await imageBitmapLoader.loadAsync(abs)
-        const tex = new THREE.Texture(bitmap)
-        tex.colorSpace = THREE.SRGBColorSpace
-        tex.needsUpdate = true
-        return tex
+        return await loadTextureViaFetch(abs)
       } catch {
         return new Promise<THREE.Texture>((resolve, reject) => {
           textureLoader.load(
