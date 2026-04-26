@@ -19,18 +19,28 @@ const bookAssetModules = {
   ...import.meta.glob('../../book-assets/*.{png,jpg,jpeg,webp}', { eager: true, as: 'url' }),
 } as Record<string, string>
 
-/** 打包后的 /assets/... 在部分路由下需用绝对 URL，否则 TextureLoader 可能请求错路径 */
+/** 打包后的 /assets/... 转成绝对 URL；用 baseURI 避免子路径部署时相对路径被拼到 /book 下 */
 function toAbsoluteAssetUrl(src: string): string {
+  if (!src || typeof src !== 'string') return ''
   if (/^https?:\/\//i.test(src) || src.startsWith('data:') || src.startsWith('blob:')) return src
   try {
-    return new URL(src, window.location.origin).href
+    return new URL(src, document.baseURI || window.location.href).href
   } catch {
     return src
   }
 }
 
 function isVibeCoverAssetName(name: string) {
-  return name === 'vibecover.png' || name === 'vibe cover.png'
+  return name === 'vibecover.png' || name === 'vibe cover.png' || name === 'vibe-cover.png'
+}
+
+function configureBookMapTexture(tex: THREE.Texture) {
+  tex.colorSpace = THREE.SRGBColorSpace
+  /** 内页 1080×1440 非 2 幂；关闭 mipmap 避免部分 WebGL1 / 移动 GPU 上传失败 */
+  tex.minFilter = THREE.LinearFilter
+  tex.magFilter = THREE.LinearFilter
+  tex.generateMipmaps = false
+  tex.needsUpdate = true
 }
 
 type BookTextureSlot = {
@@ -48,6 +58,7 @@ function resolveBookAssetUrls(): {
   /** 同名文件：`book-assets/` 覆盖 `0426 金柱勋测试/`（合并对象中后者键在后，Map 保留最后一次写入） */
   const byFileName = new Map<string, { url: string; name: string }>()
   for (const [path, url] of Object.entries(bookAssetModules)) {
+    if (typeof url !== 'string' || !url) continue
     const name = (path.split('/').pop() ?? '').toLowerCase()
     byFileName.set(name, { url, name })
   }
@@ -172,6 +183,7 @@ export default function Book3DGallery() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
     renderer.setSize(iw, ih)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.outputColorSpace = THREE.SRGBColorSpace
     canvasHost.appendChild(renderer.domElement)
 
     bookGroup = new THREE.Group()
@@ -611,43 +623,77 @@ export default function Book3DGallery() {
       buildBook(frontCover, inner, insideCover, vibeInside, backOutside)
     }
 
-    const objectUrlsToRevoke: string[] = []
+    /** 同源绝对 URL → Image（不设置 crossOrigin，避免 WebGL 与 CORS 组合问题） */
+    const loadTextureViaDirectImage = (abs: string) =>
+      new Promise<THREE.Texture>((resolve, reject) => {
+        const img = new Image()
+        img.onload = () => {
+          void (async () => {
+            try {
+              if ('decode' in img) await img.decode()
+              const tex = new THREE.Texture(img)
+              configureBookMapTexture(tex)
+              resolve(tex)
+            } catch (e) {
+              reject(e instanceof Error ? e : new Error(String(e)))
+            }
+          })()
+        }
+        img.onerror = () => reject(new Error(`direct-img ${abs}`))
+        img.src = abs
+      })
 
-    /** fetch → blob URL → Image（不设 crossOrigin），兼容 WebGL 在部分 WebView / 嵌入浏览器里的限制 */
-    const loadTextureViaBlobImage = async (abs: string) => {
-      const res = await fetch(abs, { credentials: 'same-origin' })
+    /** fetch → blob → Image → 2D canvas → CanvasTexture（像素进 GPU，不依赖 Image→WebGL 直传） */
+    const loadTextureViaFetchCanvas = async (abs: string) => {
+      const res = await fetch(abs, { credentials: 'same-origin', cache: 'force-cache' })
       if (!res.ok) throw new Error(`fetch ${res.status}`)
       const blob = await res.blob()
       const objectUrl = URL.createObjectURL(blob)
-      objectUrlsToRevoke.push(objectUrl)
-      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const el = new Image()
-        el.onload = () => resolve(el)
-        el.onerror = () => reject(new Error(`img ${abs}`))
-        el.src = objectUrl
-      })
-      const tex = new THREE.Texture(img)
-      tex.colorSpace = THREE.SRGBColorSpace
-      tex.needsUpdate = true
-      return tex
+      try {
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const el = new Image()
+          el.onload = () => resolve(el)
+          el.onerror = () => reject(new Error(`blob-img ${abs}`))
+          el.src = objectUrl
+        })
+        const w = img.naturalWidth || img.width
+        const h = img.naturalHeight || img.height
+        if (!w || !h) throw new Error(`zero size ${abs}`)
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d', { alpha: true })
+        if (!ctx) throw new Error('no 2d context')
+        ctx.drawImage(img, 0, 0)
+        const tex = new THREE.CanvasTexture(canvas)
+        configureBookMapTexture(tex)
+        return tex
+      } finally {
+        URL.revokeObjectURL(objectUrl)
+      }
     }
 
     const loadOneTexture = async (url: string): Promise<THREE.Texture> => {
       const abs = toAbsoluteAssetUrl(url)
+      if (!abs) throw new Error('empty texture url')
       try {
-        return await loadTextureViaBlobImage(abs)
+        return await loadTextureViaDirectImage(abs)
       } catch {
-        return new Promise<THREE.Texture>((resolve, reject) => {
-          textureLoader.load(
-            abs,
-            (tex) => {
-              tex.colorSpace = THREE.SRGBColorSpace
-              resolve(tex)
-            },
-            undefined,
-            () => reject(new Error(`texture: ${abs}`)),
-          )
-        })
+        try {
+          return await loadTextureViaFetchCanvas(abs)
+        } catch {
+          return new Promise<THREE.Texture>((resolve, reject) => {
+            textureLoader.load(
+              abs,
+              (tex) => {
+                configureBookMapTexture(tex)
+                resolve(tex)
+              },
+              undefined,
+              () => reject(new Error(`texture: ${abs}`)),
+            )
+          })
+        }
       }
     }
 
@@ -657,10 +703,22 @@ export default function Book3DGallery() {
         return
       }
       const settled = await Promise.allSettled(textureSlots.map((s) => loadOneTexture(s.url)))
+      const okCount = settled.filter((r) => r.status === 'fulfilled').length
       settled.forEach((res, i) => {
         if (res.status === 'fulfilled') textureBucket[i] = res.value
       })
-      if (!disposed) applyLoadedTextures()
+      if (!disposed) {
+        if (okCount === 0) {
+          if (loaderEl) {
+            loaderEl.textContent =
+              '图片未能加载（请尝试系统自带浏览器或关闭「省流/无痕」后刷新）。若仍失败请反馈所用浏览器。'
+            loaderEl.style.display = 'block'
+            loaderEl.style.opacity = '1'
+          }
+          return
+        }
+        applyLoadedTextures()
+      }
     })()
 
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
@@ -676,8 +734,6 @@ export default function Book3DGallery() {
 
     return () => {
       disposed = true
-      for (const u of objectUrlsToRevoke) URL.revokeObjectURL(u)
-      objectUrlsToRevoke.length = 0
       root.removeEventListener('pointerdown', unlockAudio)
       document.removeEventListener('touchend', unlockAudio, true)
       musicToggle?.removeEventListener('click', onMusicToggleClick)
