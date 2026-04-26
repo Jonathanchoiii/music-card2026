@@ -8,8 +8,12 @@ import './Book3DGallery.css'
 const PAGE_WIDTH = 3.6
 const PAGE_HEIGHT = 4.8
 
-/** 在自适应 layout 结果上再整体放大中间 3D 书（相对当前逻辑） */
-const BOOK_VIEWPORT_SCALE_BOOST = 1.5
+/** 书在画面中目标占画布「宽度」的比例（随屏宽通过透视反推 scale，非写死像素） */
+const BOOK_SCREEN_WIDTH_FRAC = 0.6
+/** 同时限制竖直方向占比，避免上下裁切 */
+const BOOK_SCREEN_HEIGHT_FRAC = 0.82
+/** 用于宽度匹配的参考世界宽度：跨页展开 ≈ 两页宽 */
+const BOOK_REF_WORLD_WIDTH = PAGE_WIDTH * 2
 
 /** 打包后的 /assets/... 转成绝对 URL；用 baseURI 避免子路径部署时相对路径被拼到 /book 下 */
 function toAbsoluteAssetUrl(src: string): string {
@@ -129,6 +133,48 @@ function createCoverTexture() {
   return tex
 }
 
+/** 画廊模式：书背后静态大字（不参与 bookGroup 旋转） */
+function createGalleryBackdropMesh(): THREE.Mesh {
+  const W = 2048
+  const H = 1536
+  const canvas = document.createElement('canvas')
+  canvas.width = W
+  canvas.height = H
+  const ctx = canvas.getContext('2d')!
+  const lines = ['HAPPY', 'BIRTHDAY', 'JUHOON']
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const cx = W / 2
+  /** #000000 @ 5% */
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.05)'
+  const fontPx = Math.round(H * 0.22)
+  ctx.font = `900 ${fontPx}px system-ui, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif`
+  const step = fontPx * 0.95
+  let y = H * 0.28
+  for (const line of lines) {
+    ctx.fillText(line, cx, y)
+    y += step
+  }
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.needsUpdate = true
+  const aspect = W / H
+  const planeH = 28
+  const planeW = planeH * aspect
+  const geo = new THREE.PlaneGeometry(planeW, planeH)
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+    depthWrite: false,
+    toneMapped: false,
+  })
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.position.set(0, 0, -26)
+  mesh.renderOrder = -20
+  mesh.visible = false
+  return mesh
+}
+
 export default function Book3DGallery() {
   const rootRef = useRef<HTMLDivElement>(null)
   const canvasHostRef = useRef<HTMLDivElement>(null)
@@ -141,6 +187,7 @@ export default function Book3DGallery() {
     let scene: THREE.Scene | null = null
     let camera: THREE.PerspectiveCamera | null = null
     let renderer: THREE.WebGLRenderer | null = null
+    let galleryBackdrop: THREE.Mesh | null = null
     let bookGroup: THREE.Group | null = null
     let sheets: THREE.Group[] = []
     let currentSheetIndex = 0
@@ -148,9 +195,6 @@ export default function Book3DGallery() {
     let isFanMode = false
     let raf = 0
     let disposed = false
-    /** 触摸/小屏时的基础缩放系数（不含 BOOK_VIEWPORT_SCALE_BOOST）。与 cameraZViewportMul 一起调相机距离 */
-    let layoutScale = 1
-
     const raycaster = new THREE.Raycaster()
     const ndc = new THREE.Vector2()
 
@@ -159,43 +203,27 @@ export default function Book3DGallery() {
       return { w: Math.max(1, rect.width), h: Math.max(1, rect.height) }
     }
 
-    const cameraZViewportMul = () => 0.58 + 0.42 * layoutScale
-
-    const computeLayoutScale = (w: number, h: number) => {
-      const minD = Math.min(w, h)
-      const maxD = Math.max(w, h)
-      const portrait = h >= w * 1.02
-
-      /**
-       * 大屏 Web（鼠标 + 视口足够）：保持原比例 1，不整体缩小。
-       * 手机/触摸或窄窗口：按短边阶梯缩小，避免裁切。
-       */
-      const finePointer =
-        typeof window.matchMedia === 'function' && window.matchMedia('(pointer: fine)').matches
-      if (finePointer && minD >= 560 && maxD >= 900) {
-        return 1
-      }
-
-      if (portrait && minD < 420) return Math.max(0.32, Math.min(1, (minD / 520) * 0.88))
-      if (portrait && minD < 520) return Math.max(0.38, Math.min(1, (minD / 560) * 0.9))
-      if (portrait && minD < 640) return Math.max(0.44, Math.min(1, (minD / 620) * 0.88))
-      if (portrait && minD < 780) return Math.max(0.52, Math.min(1, (minD / 700) * 0.9))
-      if (minD < 840) return Math.max(0.6, Math.min(1, (minD / 800) * 0.92))
-      return 1
-    }
-
+    /**
+     * 更新画布尺寸与书组 scale：用当前相机距离在 z=0 处的透视可视宽度，使书展开宽度约占屏宽的 BOOK_SCREEN_WIDTH_FRAC。
+     * 不修改 camera.position.z，避免与 gsap 模式切换动画冲突；z 由 buildBook / setFanMode 设定。
+     */
     const applyViewportLayout = () => {
-      if (!bookGroup || !camera) return
+      if (!bookGroup || !camera || !renderer) return
       const { w, h } = getSize()
-      layoutScale = computeLayoutScale(w, h)
-      bookGroup.scale.setScalar(layoutScale * BOOK_VIEWPORT_SCALE_BOOST)
-      if (totalSheets <= 0) return
-      if (isFanMode) {
-        const innerCount = Math.max(1, totalSheets - 2)
-        camera.position.z = fanViewCameraZ(innerCount) * cameraZViewportMul()
-      } else {
-        camera.position.z = bookViewCameraZ(totalSheets) * cameraZViewportMul()
-      }
+      camera.aspect = w / h
+      camera.updateProjectionMatrix()
+      renderer.setSize(w, h)
+
+      const zForProj = Math.max(0.01, camera.position.z)
+      const vFov = THREE.MathUtils.degToRad(camera.fov)
+      const aspect = w / Math.max(1, h)
+      const visibleH = 2 * zForProj * Math.tan(vFov / 2)
+      const visibleW = visibleH * aspect
+
+      let s = (BOOK_SCREEN_WIDTH_FRAC * visibleW) / BOOK_REF_WORLD_WIDTH
+      const sMaxByHeight = (BOOK_SCREEN_HEIGHT_FRAC * visibleH) / PAGE_HEIGHT
+      s = Math.min(s, sMaxByHeight)
+      bookGroup.scale.setScalar(THREE.MathUtils.clamp(s, 0.18, 4))
     }
 
     const setPointerFromEvent = (e: PointerEvent) => {
@@ -220,6 +248,8 @@ export default function Book3DGallery() {
 
     bookGroup = new THREE.Group()
     bookGroup.position.x = 0
+    galleryBackdrop = createGalleryBackdropMesh()
+    scene.add(galleryBackdrop)
     scene.add(bookGroup)
     applyViewportLayout()
 
@@ -268,12 +298,12 @@ export default function Book3DGallery() {
     const SWIPE_PX = 48
     /** 画廊：水平拖 = 绕竖轴（与自动旋转同轴叠加） */
     const FAN_YAW_SCALE = 0.006
-    /** 画廊：垂直拖 = 俯仰查看 */
+    /** 画廊：垂直拖 = 俯仰查看；上推抬头、下拉低头，与屏幕拖动方向一致 */
     const FAN_PITCH_SCALE = 0.0048
     const FAN_PITCH_MIN = 0.1
     const FAN_PITCH_MAX = 1.55
     /** 画廊空闲时绕 Y 恒速旋转；拖拽时不暂停 */
-    const FAN_AUTO_YAW = 0.002
+    const FAN_AUTO_YAW = 0.0034
 
     const killSheetTweens = (sheet: THREE.Group) => {
       gsap.killTweensOf(sheet.rotation)
@@ -389,7 +419,7 @@ export default function Book3DGallery() {
         lastX = e.clientX
         lastY = e.clientY
         bookGroup.rotation.y += rdx * FAN_YAW_SCALE
-        bookGroup.rotation.x -= rdy * FAN_PITCH_SCALE
+        bookGroup.rotation.x += rdy * FAN_PITCH_SCALE
         bookGroup.rotation.x = Math.max(FAN_PITCH_MIN, Math.min(FAN_PITCH_MAX, bookGroup.rotation.x))
       }
     }
@@ -479,8 +509,16 @@ export default function Book3DGallery() {
       const innerCount = Math.max(1, totalSheets - 2)
 
       if (isFanMode) {
-        const fz = fanViewCameraZ(innerCount) * cameraZViewportMul()
-        gsap.to(camera.position, { x: 0, y: 0, z: fz, duration: 2, ease: 'power3.inOut' })
+        const fz = fanViewCameraZ(innerCount)
+        gsap.to(camera.position, {
+          x: 0,
+          y: 0,
+          z: fz,
+          duration: 2,
+          ease: 'power3.inOut',
+          onUpdate: () => applyViewportLayout(),
+          onComplete: () => applyViewportLayout(),
+        })
         gsap.to(bookGroup.position, { x: 0, y: 0, z: 0, duration: 2, ease: 'power3.inOut' })
         gsap.to(bookGroup.rotation, { x: 0.8, z: -0.2, duration: 2, ease: 'power3.inOut' })
         sheets.forEach((sheet, i) => {
@@ -494,8 +532,16 @@ export default function Book3DGallery() {
           gsap.to(sheet.position, { z: 0, duration: 2, ease: 'power3.inOut' })
         })
       } else {
-        const bz = bookViewCameraZ(totalSheets) * cameraZViewportMul()
-        gsap.to(camera.position, { x: 0, y: 0, z: bz, duration: 2, ease: 'power3.inOut' })
+        const bz = bookViewCameraZ(totalSheets)
+        gsap.to(camera.position, {
+          x: 0,
+          y: 0,
+          z: bz,
+          duration: 2,
+          ease: 'power3.inOut',
+          onUpdate: () => applyViewportLayout(),
+          onComplete: () => applyViewportLayout(),
+        })
         bookGroup.rotation.y = bookGroup.rotation.y % (Math.PI * 2)
         gsap.to(bookGroup.rotation, { x: 0, y: 0, z: 0, duration: 2, ease: 'power3.inOut' })
         gsap.to(bookGroup.position, { x: 0, y: 0, z: 0, duration: 2, ease: 'power3.inOut' })
@@ -509,6 +555,7 @@ export default function Book3DGallery() {
         })
         window.setTimeout(checkReplayButton, 2000)
       }
+      if (galleryBackdrop) galleryBackdrop.visible = isFanMode
       syncModeChips()
     }
 
@@ -523,10 +570,6 @@ export default function Book3DGallery() {
 
     const onResize = () => {
       if (!camera || !renderer) return
-      const { w, h } = getSize()
-      camera.aspect = w / h
-      camera.updateProjectionMatrix()
-      renderer.setSize(w, h)
       applyViewportLayout()
     }
 
@@ -625,9 +668,11 @@ export default function Book3DGallery() {
         bookGroup.add(sheetGroup)
       }
 
-      if (camera) {
-        applyViewportLayout()
+      if (camera && totalSheets > 0) {
+        const innerCount = Math.max(1, totalSheets - 2)
+        camera.position.z = isFanMode ? fanViewCameraZ(innerCount) : bookViewCameraZ(totalSheets)
       }
+      applyViewportLayout()
     }
 
     const textureLoader = new THREE.TextureLoader()
