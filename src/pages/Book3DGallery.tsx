@@ -8,6 +8,9 @@ import './Book3DGallery.css'
 const PAGE_WIDTH = 3.6
 const PAGE_HEIGHT = 4.8
 
+/** 在自适应 layout 结果上再整体放大中间 3D 书（相对当前逻辑） */
+const BOOK_VIEWPORT_SCALE_BOOST = 1.5
+
 /** 打包后的 /assets/... 转成绝对 URL；用 baseURI 避免子路径部署时相对路径被拼到 /book 下 */
 function toAbsoluteAssetUrl(src: string): string {
   if (!src || typeof src !== 'string') return ''
@@ -145,7 +148,7 @@ export default function Book3DGallery() {
     let isFanMode = false
     let raf = 0
     let disposed = false
-    /** 触摸/小屏时整体缩小书模型；大屏鼠标端保持 1。与 cameraZViewportMul 一起调相机距离 */
+    /** 触摸/小屏时的基础缩放系数（不含 BOOK_VIEWPORT_SCALE_BOOST）。与 cameraZViewportMul 一起调相机距离 */
     let layoutScale = 1
 
     const raycaster = new THREE.Raycaster()
@@ -185,7 +188,7 @@ export default function Book3DGallery() {
       if (!bookGroup || !camera) return
       const { w, h } = getSize()
       layoutScale = computeLayoutScale(w, h)
-      bookGroup.scale.setScalar(layoutScale)
+      bookGroup.scale.setScalar(layoutScale * BOOK_VIEWPORT_SCALE_BOOST)
       if (totalSheets <= 0) return
       if (isFanMode) {
         const innerCount = Math.max(1, totalSheets - 2)
