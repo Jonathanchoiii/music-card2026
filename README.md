@@ -82,3 +82,4 @@ The app will be available at `http://localhost:5173`.
 npm run build
 npm run preview
 ```
+# music-card2026
