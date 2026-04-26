@@ -8,14 +8,14 @@ const PAGE_WIDTH = 3.6
 const PAGE_HEIGHT = 4.8
 
 /**
- * 贺卡图片：Vite eager 进包。支持两处目录（后者同名文件可覆盖前者）：
- * - `0426 金柱勋测试/`（现有中文目录）
- * - `book-assets/`（纯 ASCII，在部分部署环境更稳）
+ * 贺卡图片：Vite eager 进包（路径须为 ASCII，避免 Vercel/Linux 上中文目录 + import.meta.glob 偶发匹配不到）。
+ * - `src/assets/book-images/`：主目录（已纳入 Git）
+ * - 仓库根 `book-assets/`：可选覆盖（同名文件优先生效）
  *
  * 文件名约定：cover.png、j10.png、vibe cover.png / vibecover.png、cover2.png、j*.png（不含 j9）
  */
 const bookAssetModules = {
-  ...import.meta.glob('../../0426 金柱勋测试/*.{png,jpg,jpeg,webp}', { eager: true, as: 'url' }),
+  ...import.meta.glob('../assets/book-images/*.{png,jpg,jpeg,webp}', { eager: true, as: 'url' }),
   ...import.meta.glob('../../book-assets/*.{png,jpg,jpeg,webp}', { eager: true, as: 'url' }),
 } as Record<string, string>
 
