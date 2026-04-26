@@ -611,22 +611,22 @@ export default function Book3DGallery() {
       buildBook(frontCover, inner, insideCover, vibeInside, backOutside)
     }
 
-    const loadTextureViaFetch = async (abs: string) => {
+    const objectUrlsToRevoke: string[] = []
+
+    /** fetch → blob URL → Image（不设 crossOrigin），兼容 WebGL 在部分 WebView / 嵌入浏览器里的限制 */
+    const loadTextureViaBlobImage = async (abs: string) => {
       const res = await fetch(abs, { credentials: 'same-origin' })
       if (!res.ok) throw new Error(`fetch ${res.status}`)
       const blob = await res.blob()
-      /** `imageOrientation: 'flipY'` 在部分 WebKit / 嵌入内核上会抛错，导致整页无贴图 */
-      let bitmap: ImageBitmap
-      try {
-        bitmap = await createImageBitmap(blob, {
-          colorSpaceConversion: 'none',
-          premultiplyAlpha: 'none',
-          imageOrientation: 'flipY',
-        })
-      } catch {
-        bitmap = await createImageBitmap(blob)
-      }
-      const tex = new THREE.Texture(bitmap)
+      const objectUrl = URL.createObjectURL(blob)
+      objectUrlsToRevoke.push(objectUrl)
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image()
+        el.onload = () => resolve(el)
+        el.onerror = () => reject(new Error(`img ${abs}`))
+        el.src = objectUrl
+      })
+      const tex = new THREE.Texture(img)
       tex.colorSpace = THREE.SRGBColorSpace
       tex.needsUpdate = true
       return tex
@@ -635,7 +635,7 @@ export default function Book3DGallery() {
     const loadOneTexture = async (url: string): Promise<THREE.Texture> => {
       const abs = toAbsoluteAssetUrl(url)
       try {
-        return await loadTextureViaFetch(abs)
+        return await loadTextureViaBlobImage(abs)
       } catch {
         return new Promise<THREE.Texture>((resolve, reject) => {
           textureLoader.load(
@@ -676,6 +676,8 @@ export default function Book3DGallery() {
 
     return () => {
       disposed = true
+      for (const u of objectUrlsToRevoke) URL.revokeObjectURL(u)
+      objectUrlsToRevoke.length = 0
       root.removeEventListener('pointerdown', unlockAudio)
       document.removeEventListener('touchend', unlockAudio, true)
       musicToggle?.removeEventListener('click', onMusicToggleClick)
