@@ -1,23 +1,12 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import gsap from 'gsap'
+import { BOOK_IMAGE_URLS } from '../assets/bookImageUrls'
 import { createAppleHappyBirthdayPreviewPlayer } from '../audio/appleBirthdayPreview'
 import './Book3DGallery.css'
 
 const PAGE_WIDTH = 3.6
 const PAGE_HEIGHT = 4.8
-
-/**
- * 贺卡图片：Vite eager 进包（路径须为 ASCII，避免 Vercel/Linux 上中文目录 + import.meta.glob 偶发匹配不到）。
- * - `src/assets/book-images/`：主目录（已纳入 Git）
- * - 仓库根 `book-assets/`：可选覆盖（同名文件优先生效）
- *
- * 文件名约定：cover.png、j10.png、vibe cover.png / vibecover.png、cover2.png、j*.png（不含 j9）
- */
-const bookAssetModules = {
-  ...import.meta.glob('../assets/book-images/*.{png,jpg,jpeg,webp}', { eager: true, as: 'url' }),
-  ...import.meta.glob('../../book-assets/*.{png,jpg,jpeg,webp}', { eager: true, as: 'url' }),
-} as Record<string, string>
 
 /** 打包后的 /assets/... 转成绝对 URL；用 baseURI 避免子路径部署时相对路径被拼到 /book 下 */
 function toAbsoluteAssetUrl(src: string): string {
@@ -55,11 +44,10 @@ function resolveBookAssetUrls(): {
   backOutsideUrl: string | null
   innerUrls: string[]
 } {
-  /** 同名文件：`book-assets/` 覆盖 `0426 金柱勋测试/`（合并对象中后者键在后，Map 保留最后一次写入） */
   const byFileName = new Map<string, { url: string; name: string }>()
-  for (const [path, url] of Object.entries(bookAssetModules)) {
+  for (const [fileName, url] of Object.entries(BOOK_IMAGE_URLS)) {
     if (typeof url !== 'string' || !url) continue
-    const name = (path.split('/').pop() ?? '').toLowerCase()
+    const name = fileName.toLowerCase()
     byFileName.set(name, { url, name })
   }
   const entries = [...byFileName.values()]
@@ -72,7 +60,6 @@ function resolveBookAssetUrls(): {
       (e) =>
         e.name !== 'cover.png' &&
         e.name !== 'j10.png' &&
-        e.name !== 'j9.png' &&
         e.name !== 'cover2.png' &&
         !isVibeCoverAssetName(e.name),
     )
@@ -157,6 +144,8 @@ export default function Book3DGallery() {
     let isFanMode = false
     let raf = 0
     let disposed = false
+    /** 竖屏/小屏时整体缩小书模型，避免裁切；与 cameraZViewportMul 一起拉近相机 */
+    let layoutScale = 1
 
     const raycaster = new THREE.Raycaster()
     const ndc = new THREE.Vector2()
@@ -164,6 +153,33 @@ export default function Book3DGallery() {
     const getSize = () => {
       const rect = canvasHost.getBoundingClientRect()
       return { w: Math.max(1, rect.width), h: Math.max(1, rect.height) }
+    }
+
+    const cameraZViewportMul = () => 0.58 + 0.42 * layoutScale
+
+    const computeLayoutScale = (w: number, h: number) => {
+      const minD = Math.min(w, h)
+      const portrait = h >= w * 1.02
+      if (portrait && minD < 420) return Math.max(0.32, Math.min(1, (minD / 520) * 0.88))
+      if (portrait && minD < 520) return Math.max(0.38, Math.min(1, (minD / 560) * 0.9))
+      if (portrait && minD < 640) return Math.max(0.44, Math.min(1, (minD / 620) * 0.88))
+      if (portrait && minD < 780) return Math.max(0.52, Math.min(1, (minD / 700) * 0.9))
+      if (minD < 840) return Math.max(0.6, Math.min(1, (minD / 800) * 0.92))
+      return 1
+    }
+
+    const applyViewportLayout = () => {
+      if (!bookGroup || !camera) return
+      const { w, h } = getSize()
+      layoutScale = computeLayoutScale(w, h)
+      bookGroup.scale.setScalar(layoutScale)
+      if (totalSheets <= 0) return
+      if (isFanMode) {
+        const innerCount = Math.max(1, totalSheets - 2)
+        camera.position.z = fanViewCameraZ(innerCount) * cameraZViewportMul()
+      } else {
+        camera.position.z = bookViewCameraZ(totalSheets) * cameraZViewportMul()
+      }
     }
 
     const setPointerFromEvent = (e: PointerEvent) => {
@@ -189,6 +205,7 @@ export default function Book3DGallery() {
     bookGroup = new THREE.Group()
     bookGroup.position.x = 0
     scene.add(bookGroup)
+    applyViewportLayout()
 
     const loaderEl = root.querySelector('#loader') as HTMLElement | null
     const modeBookBtn = root.querySelector('#mode-book') as HTMLButtonElement | null
@@ -446,7 +463,7 @@ export default function Book3DGallery() {
       const innerCount = Math.max(1, totalSheets - 2)
 
       if (isFanMode) {
-        const fz = fanViewCameraZ(innerCount)
+        const fz = fanViewCameraZ(innerCount) * cameraZViewportMul()
         gsap.to(camera.position, { x: 0, y: 0, z: fz, duration: 2, ease: 'power3.inOut' })
         gsap.to(bookGroup.position, { x: 0, y: 0, z: 0, duration: 2, ease: 'power3.inOut' })
         gsap.to(bookGroup.rotation, { x: 0.8, z: -0.2, duration: 2, ease: 'power3.inOut' })
@@ -461,7 +478,7 @@ export default function Book3DGallery() {
           gsap.to(sheet.position, { z: 0, duration: 2, ease: 'power3.inOut' })
         })
       } else {
-        const bz = bookViewCameraZ(totalSheets)
+        const bz = bookViewCameraZ(totalSheets) * cameraZViewportMul()
         gsap.to(camera.position, { x: 0, y: 0, z: bz, duration: 2, ease: 'power3.inOut' })
         bookGroup.rotation.y = bookGroup.rotation.y % (Math.PI * 2)
         gsap.to(bookGroup.rotation, { x: 0, y: 0, z: 0, duration: 2, ease: 'power3.inOut' })
@@ -494,6 +511,7 @@ export default function Book3DGallery() {
       camera.aspect = w / h
       camera.updateProjectionMatrix()
       renderer.setSize(w, h)
+      applyViewportLayout()
     }
 
     const ro = new ResizeObserver(() => {
@@ -526,7 +544,7 @@ export default function Book3DGallery() {
 
     /**
      * 封面 cover；封面背 j10；内页 j* 两两一组；
-     * 最后一跨页内侧：vibecover（若无则 #EEEEEE）；封底外侧：cover2（若无则程序纹理）
+     * 最后一跨页内侧：vibecover（若无则 #EEEEEE）；封底外侧：cover2（若无则程序纹理）。内页含 j1–j9（j10 为封面背）
      */
     const buildBook = (
       frontCoverTex: THREE.Texture,
@@ -592,7 +610,7 @@ export default function Book3DGallery() {
       }
 
       if (camera) {
-        camera.position.z = bookViewCameraZ(totalSheets)
+        applyViewportLayout()
       }
     }
 
