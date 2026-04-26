@@ -585,7 +585,11 @@ export default function Book3DGallery() {
     }
 
     const textureLoader = new THREE.TextureLoader()
-    textureLoader.crossOrigin = 'anonymous'
+    /**
+     * three@0.184 默认 `crossOrigin = 'anonymous'`，同源 PNG 也会走 CORS 模式；部分浏览器 / WebView
+     * 下 WebGL 上传会失败（画面只剩程序生成的封面）。不设置 crossOrigin 时同源 <img> 可正常作为纹理。
+     */
+    textureLoader.setCrossOrigin(undefined as unknown as string)
 
     const bookAssets = resolveBookAssetUrls()
     const textureSlots = planBookTextureSlots(bookAssets)
@@ -611,6 +615,18 @@ export default function Book3DGallery() {
       buildBook(frontCover, inner, insideCover, vibeInside, backOutside)
     }
 
+    const loadTextureViaFetchBitmap = async (abs: string) => {
+      const res = await fetch(abs, { mode: 'cors', credentials: 'omit' })
+      if (!res.ok) throw new Error(`fetch ${res.status}: ${abs}`)
+      const blob = await res.blob()
+      const bitmap = await createImageBitmap(blob)
+      const tex = new THREE.Texture(bitmap)
+      tex.colorSpace = THREE.SRGBColorSpace
+      tex.flipY = false
+      tex.needsUpdate = true
+      return tex
+    }
+
     const loadOneTexture = (url: string) =>
       new Promise<THREE.Texture>((resolve, reject) => {
         const abs = toAbsoluteAssetUrl(url)
@@ -621,7 +637,9 @@ export default function Book3DGallery() {
             resolve(tex)
           },
           undefined,
-          () => reject(new Error(`texture: ${abs}`)),
+          () => {
+            void loadTextureViaFetchBitmap(abs).then(resolve).catch(() => reject(new Error(`texture: ${abs}`)))
+          },
         )
       })
 
