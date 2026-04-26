@@ -8,17 +8,26 @@ const PAGE_WIDTH = 3.6
 const PAGE_HEIGHT = 4.8
 
 /**
- * 仓库根目录 `0426 金柱勋测试`：Vite 打包时从本地目录 eager 进包。
- * - cover.png：封面
- * - j10.png：封面翻开后的内侧左页（封面背面），不参与内页跨页序列
- * - vibecover.png 或 `vibe cover.png`：封底前一页内侧（原 #EEEEEE 灰页）
- * - cover2.png：封底外侧（原程序生成封底）
- * - 其余图片：内页，按文件名排序后两两一组拼跨页（不含 j9.png）
+ * 贺卡图片：Vite eager 进包。支持两处目录（后者同名文件可覆盖前者）：
+ * - `0426 金柱勋测试/`（现有中文目录）
+ * - `book-assets/`（纯 ASCII，在部分部署环境更稳）
+ *
+ * 文件名约定：cover.png、j10.png、vibe cover.png / vibecover.png、cover2.png、j*.png（不含 j9）
  */
-const bookAssetModules = import.meta.glob('../../0426 金柱勋测试/*.{png,jpg,jpeg,webp}', {
-  eager: true,
-  as: 'url',
-}) as Record<string, string>
+const bookAssetModules = {
+  ...import.meta.glob('../../0426 金柱勋测试/*.{png,jpg,jpeg,webp}', { eager: true, as: 'url' }),
+  ...import.meta.glob('../../book-assets/*.{png,jpg,jpeg,webp}', { eager: true, as: 'url' }),
+} as Record<string, string>
+
+/** 打包后的 /assets/... 在部分路由下需用绝对 URL，否则 TextureLoader 可能请求错路径 */
+function toAbsoluteAssetUrl(src: string): string {
+  if (/^https?:\/\//i.test(src) || src.startsWith('data:') || src.startsWith('blob:')) return src
+  try {
+    return new URL(src, window.location.origin).href
+  } catch {
+    return src
+  }
+}
 
 function isVibeCoverAssetName(name: string) {
   return name === 'vibecover.png' || name === 'vibe cover.png'
@@ -36,10 +45,13 @@ function resolveBookAssetUrls(): {
   backOutsideUrl: string | null
   innerUrls: string[]
 } {
-  const entries = Object.entries(bookAssetModules).map(([path, url]) => ({
-    url,
-    name: (path.split('/').pop() ?? '').toLowerCase(),
-  }))
+  /** 同名文件：`book-assets/` 覆盖 `0426 金柱勋测试/`（合并对象中后者键在后，Map 保留最后一次写入） */
+  const byFileName = new Map<string, { url: string; name: string }>()
+  for (const [path, url] of Object.entries(bookAssetModules)) {
+    const name = (path.split('/').pop() ?? '').toLowerCase()
+    byFileName.set(name, { url, name })
+  }
+  const entries = [...byFileName.values()]
   const coverEntry = entries.find((e) => e.name === 'cover.png')
   const insideCoverEntry = entries.find((e) => e.name === 'j10.png')
   const vibeEntry = entries.find((e) => isVibeCoverAssetName(e.name))
@@ -572,12 +584,12 @@ export default function Book3DGallery() {
       }
     }
 
-    const manager = new THREE.LoadingManager()
-    const textureLoader = new THREE.TextureLoader(manager)
+    const textureLoader = new THREE.TextureLoader()
+    textureLoader.crossOrigin = 'anonymous'
+
     const bookAssets = resolveBookAssetUrls()
     const textureSlots = planBookTextureSlots(bookAssets)
-    const loadOrder = textureSlots.map((s) => s.url)
-    const textureBucket: (THREE.Texture | undefined)[] = new Array(loadOrder.length)
+    const textureBucket: (THREE.Texture | undefined)[] = new Array(textureSlots.length)
 
     const applyLoadedTextures = () => {
       if (disposed) return
@@ -599,19 +611,31 @@ export default function Book3DGallery() {
       buildBook(frontCover, inner, insideCover, vibeInside, backOutside)
     }
 
-    if (loadOrder.length === 0) {
-      applyLoadedTextures()
-    } else {
-      manager.onLoad = () => {
-        applyLoadedTextures()
-      }
-      loadOrder.forEach((url, idx) => {
-        textureLoader.load(url, (tex) => {
-          tex.colorSpace = THREE.SRGBColorSpace
-          textureBucket[idx] = tex
-        })
+    const loadOneTexture = (url: string) =>
+      new Promise<THREE.Texture>((resolve, reject) => {
+        const abs = toAbsoluteAssetUrl(url)
+        textureLoader.load(
+          abs,
+          (tex) => {
+            tex.colorSpace = THREE.SRGBColorSpace
+            resolve(tex)
+          },
+          undefined,
+          () => reject(new Error(`texture: ${abs}`)),
+        )
       })
-    }
+
+    void (async () => {
+      if (textureSlots.length === 0) {
+        applyLoadedTextures()
+        return
+      }
+      const settled = await Promise.allSettled(textureSlots.map((s) => loadOneTexture(s.url)))
+      settled.forEach((res, i) => {
+        if (res.status === 'fulfilled') textureBucket[i] = res.value
+      })
+      if (!disposed) applyLoadedTextures()
+    })()
 
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
     renderer.domElement.addEventListener('pointermove', onPointerMove)
