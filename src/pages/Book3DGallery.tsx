@@ -60,6 +60,7 @@ function resolveBookAssetUrls(): {
       (e) =>
         e.name !== 'cover.png' &&
         e.name !== 'j10.png' &&
+        e.name !== 'j9.png' &&
         e.name !== 'cover2.png' &&
         !isVibeCoverAssetName(e.name),
     )
@@ -144,7 +145,7 @@ export default function Book3DGallery() {
     let isFanMode = false
     let raf = 0
     let disposed = false
-    /** 竖屏/小屏时整体缩小书模型，避免裁切；与 cameraZViewportMul 一起拉近相机 */
+    /** 触摸/小屏时整体缩小书模型；大屏鼠标端保持 1。与 cameraZViewportMul 一起调相机距离 */
     let layoutScale = 1
 
     const raycaster = new THREE.Raycaster()
@@ -159,7 +160,19 @@ export default function Book3DGallery() {
 
     const computeLayoutScale = (w: number, h: number) => {
       const minD = Math.min(w, h)
+      const maxD = Math.max(w, h)
       const portrait = h >= w * 1.02
+
+      /**
+       * 大屏 Web（鼠标 + 视口足够）：保持原比例 1，不整体缩小。
+       * 手机/触摸或窄窗口：按短边阶梯缩小，避免裁切。
+       */
+      const finePointer =
+        typeof window.matchMedia === 'function' && window.matchMedia('(pointer: fine)').matches
+      if (finePointer && minD >= 560 && maxD >= 900) {
+        return 1
+      }
+
       if (portrait && minD < 420) return Math.max(0.32, Math.min(1, (minD / 520) * 0.88))
       if (portrait && minD < 520) return Math.max(0.38, Math.min(1, (minD / 560) * 0.9))
       if (portrait && minD < 640) return Math.max(0.44, Math.min(1, (minD / 620) * 0.88))
@@ -544,7 +557,7 @@ export default function Book3DGallery() {
 
     /**
      * 封面 cover；封面背 j10；内页 j* 两两一组；
-     * 最后一跨页内侧：vibecover（若无则 #EEEEEE）；封底外侧：cover2（若无则程序纹理）。内页含 j1–j9（j10 为封面背）
+     * 最后一跨页内侧：vibecover（若无则 #EEEEEE）；封底外侧：cover2（若无则程序纹理）。内页 j1–j8（不含 j9；j10 为封面背）
      */
     const buildBook = (
       frontCoverTex: THREE.Texture,

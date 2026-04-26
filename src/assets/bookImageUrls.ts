@@ -1,6 +1,6 @@
 /**
  * 显式 ?url 导入：避免 import.meta.glob 在部分打包/移动端路径差异导致漏图。
- * 新增/重命名贺卡图时请在此同步文件名。
+ * 新增/重命名贺卡图时请在此同步文件名。（j9 不参与内页；文件可留在目录但不导入以减小包体）
  */
 import coverUrl from './book-images/cover.png?url'
 import cover2Url from './book-images/cover2.png?url'
@@ -13,7 +13,6 @@ import j5Url from './book-images/j5.png?url'
 import j6Url from './book-images/j6.png?url'
 import j7Url from './book-images/j7.png?url'
 import j8Url from './book-images/j8.png?url'
-import j9Url from './book-images/j9.png?url'
 import vibeCoverUrl from './book-images/vibe cover.png?url'
 
 export const BOOK_IMAGE_URLS: Record<string, string> = {
@@ -27,7 +26,6 @@ export const BOOK_IMAGE_URLS: Record<string, string> = {
   'j6.png': j6Url,
   'j7.png': j7Url,
   'j8.png': j8Url,
-  'j9.png': j9Url,
   'j10.png': j10Url,
   'vibe cover.png': vibeCoverUrl,
 }
