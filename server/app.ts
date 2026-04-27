@@ -330,9 +330,44 @@ async function itunesLookup(id: string) {
   return res.json() as Promise<{ resultCount: number; results: ItunesItem[] }>
 }
 
-/** 贺卡页：返回 Apple 目录中《生日快乐》类歌曲的 ~30s 试听 URL（与 Apple Music / iTunes 试听同源） */
+/** 贺卡页：返回 Apple 目录中《生日快乐》试听 URL，优先 Looloo Kids 版本 */
 app.get('/api/apple/birthday-preview', async (_req, res) => {
   try {
+    // 优先搜索 "Happy Birthday Looloo Kids"
+    const LOOLOOKUPS = [
+      { term: 'Happy Birthday Looloo Kids', countries: ['us', 'cn', 'gb', 'au'] },
+      { term: 'Happy Birthday Looloo', countries: ['us', 'cn', 'gb', 'au'] },
+    ]
+
+    for (const { term, countries } of LOOLOOKUPS) {
+      for (const country of countries) {
+        const data = await itunesFetch({
+          term,
+          media: 'music',
+          entity: 'song',
+          limit: '20',
+          country,
+        })
+        const hit = data.results.find(
+          (it) =>
+            it.previewUrl &&
+            /happy.*birthday/i.test(it.trackName) &&
+            /looloo/i.test(it.artistName),
+        )
+        if (hit?.previewUrl) {
+          console.log(`[apple/birthday-preview] Looloo Kids hit: ${hit.trackName} - ${hit.artistName}`)
+          res.json({
+            previewUrl: hit.previewUrl,
+            trackName: hit.trackName,
+            artistName: hit.artistName,
+          })
+          return
+        }
+      }
+    }
+
+    // 未找到 Looloo Kids 版本，回退到通用搜索
+    console.log('[apple/birthday-preview] Looloo Kids not found, falling back to generic search')
     const queries = ['Happy Birthday Traditional', 'Happy Birthday To You', 'Happy Birthday']
     const countries = ['us', 'cn', 'hk', 'tw', 'jp']
 

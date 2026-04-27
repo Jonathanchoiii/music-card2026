@@ -523,7 +523,19 @@ export default function Book3DGallery() {
         gsap.to(bookGroup.rotation, { x: 0.8, z: -0.2, duration: 2, ease: 'power3.inOut' })
         sheets.forEach((sheet, i) => {
           if (i === 0 || i === totalSheets - 1) {
-            sheet.visible = false
+            // 封面/封底做淡出过渡，而非直接隐藏
+            sheet.traverse((child) => {
+              if (child instanceof THREE.Mesh && child.material) {
+                const mat = child.material as THREE.MeshBasicMaterial
+                mat.transparent = true
+                gsap.to(mat, {
+                  opacity: 0,
+                  duration: 0.6,
+                  ease: 'power2.in',
+                  onComplete: () => { sheet.visible = false },
+                })
+              }
+            })
             return
           }
           const j = i - 1
@@ -542,16 +554,47 @@ export default function Book3DGallery() {
           onUpdate: () => applyViewportLayout(),
           onComplete: () => applyViewportLayout(),
         })
-        bookGroup.rotation.y = bookGroup.rotation.y % (Math.PI * 2)
+        // 将 bookGroup.rotation.y 归一化到 (-PI, PI] 范围，避免从大角度突跳
+        let normalizedY = bookGroup.rotation.y % (Math.PI * 2)
+        if (normalizedY > Math.PI) normalizedY -= Math.PI * 2
+        if (normalizedY < -Math.PI) normalizedY += Math.PI * 2
+        bookGroup.rotation.y = normalizedY
         gsap.to(bookGroup.rotation, { x: 0, y: 0, z: 0, duration: 2, ease: 'power3.inOut' })
         gsap.to(bookGroup.position, { x: 0, y: 0, z: 0, duration: 2, ease: 'power3.inOut' })
         sheets.forEach((sheet, i) => {
-          sheet.visible = true
-          const isTurnedLeft = i < currentSheetIndex
-          const targetRotY = isTurnedLeft ? -Math.PI : 0
-          const targetZ = isTurnedLeft ? i * 0.005 : -i * 0.005
-          gsap.to(sheet.rotation, { x: 0, y: targetRotY, duration: 2, ease: 'power3.inOut' })
-          gsap.to(sheet.position, { z: targetZ, duration: 2, ease: 'power3.inOut' })
+          const isCoverOrBack = i === 0 || i === totalSheets - 1
+          if (isCoverOrBack) {
+            // 封面/封底在画廊中被隐藏了，先让它们保持不可见
+            // 先将旋转和位置立即设置到目标值，然后做 opacity 淡入
+            const isTurnedLeft = i < currentSheetIndex
+            const targetRotY = isTurnedLeft ? -Math.PI : 0
+            const targetZ = isTurnedLeft ? i * 0.005 : -i * 0.005
+            sheet.rotation.set(0, targetRotY, 0)
+            sheet.position.z = targetZ
+            // 设置材质为透明，做淡入效果
+            sheet.traverse((child) => {
+              if (child instanceof THREE.Mesh && child.material) {
+                const mat = child.material as THREE.MeshBasicMaterial
+                mat.transparent = true
+                mat.opacity = 0
+              }
+            })
+            sheet.visible = true
+            // 延迟 0.3s 后开始淡入，避免在画廊扇形散开时突然闪现
+            sheet.traverse((child) => {
+              if (child instanceof THREE.Mesh && child.material) {
+                gsap.to(child.material, { opacity: 1, duration: 1.2, delay: 0.3, ease: 'power2.inOut' })
+              }
+            })
+          } else {
+            // 内页在画廊中本来就可见，只需动画旋转回目标位置
+            sheet.visible = true
+            const isTurnedLeft = i < currentSheetIndex
+            const targetRotY = isTurnedLeft ? -Math.PI : 0
+            const targetZ = isTurnedLeft ? i * 0.005 : -i * 0.005
+            gsap.to(sheet.rotation, { x: 0, y: targetRotY, duration: 2, ease: 'power3.inOut' })
+            gsap.to(sheet.position, { z: targetZ, duration: 2, ease: 'power3.inOut' })
+          }
         })
         window.setTimeout(checkReplayButton, 2000)
       }
